@@ -20,6 +20,8 @@ namespace NeskAgent.Proxy
             _nginxService = nginxService;
         }
 
+        private static readonly CancellationTokenSource _sslLoopCts = new();
+
         public IReadOnlySet<string> SupportedActions => new HashSet<string>
         {
             "update_proxy",
@@ -105,14 +107,29 @@ namespace NeskAgent.Proxy
             var domain = command.RootElement.GetProperty("domain").GetString()!;
             var email = command.RootElement.TryGetProperty("email", out var e) ? e.GetString() : null;
 
+            Console.WriteLine($"[ProxyPlugin] Recebido generate_ssl para dominio: {domain}");
+
+            // Usa o CancellationTokenSource estatico (nao o ct da requisicao) para
+            // que o certbot nao seja cancelado quando a resposta Async for enviada
+            // e o token de cancelamento da requisicao for descartado.
             _ = Task.Run(async () =>
             {
-                var success = await _nginxService.GenerateSslAsync(domain, email, ct);
+                try
+                {
+                    var success = await _nginxService.GenerateSslAsync(domain, email, _sslLoopCts.Token);
+                    Console.WriteLine($"[ProxyPlugin] Resultado do certbot para {domain}: {(success ? "OK" : "FALHOU")}");
 
-                // Notifica a API sobre o resultado, para ela marcar ssl_issued
-                // (e reenviar update_proxy com ssl_available=true)
-                await NotifySslResultAsync(domain, success, ct);
-            }, ct);
+                    // Notifica a API sobre o resultado, para ela marcar ssl_issued
+                    // (e reenviar update_proxy com ssl_available=true)
+                    await NotifySslResultAsync(domain, success, _sslLoopCts.Token);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[ProxyPlugin] Erro no generate_ssl em background para {domain}: {ex.Message}");
+                    await NotifySslResultAsync(domain, false, _sslLoopCts.Token);
+                }
+            }, _sslLoopCts.Token);
+
             return CommandResult.Async($"SSL generation started for {domain}.");
         }
 

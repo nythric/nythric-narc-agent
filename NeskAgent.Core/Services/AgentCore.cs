@@ -96,7 +96,7 @@ namespace NeskAgent.Core.Services
 
         /// <summary>
         /// Loop que envia telemetria periodicamente para a API central.
-        /// Atualiza CPU, RAM, DISK, uptime e OS a cada 30 segundos.
+        /// Atualiza CPU, RAM, DISK, uptime e OS a cada 5 segundos.
         /// </summary>
         private async Task TelemetryLoopAsync(CancellationToken ct)
         {
@@ -116,7 +116,7 @@ namespace NeskAgent.Core.Services
 
                 try
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(30), ct);
+                    await Task.Delay(TimeSpan.FromSeconds(5), ct);
                 }
                 catch (TaskCanceledException) { break; }
             }

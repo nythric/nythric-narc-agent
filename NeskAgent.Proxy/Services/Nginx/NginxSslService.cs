@@ -34,17 +34,18 @@ namespace NeskAgent.Proxy.Services.Nginx
             // --non-interactive = sem prompt
             // --agree-tos = aceita ToS
             // --no-redirect = nao tenta forcar HTTPS (deixa o painel decidir)
+            // Usa sudo pois o certbot precisa escrever em /etc/letsencrypt
             var command = $"sudo certbot --nginx -d {domain} --cert-name {domain} --non-interactive --agree-tos {emailArg} --no-redirect";
-            return await RunCertbotAsync(command, ct);
+            return await RunCertbotAsync(command, domain, ct);
         }
 
-        public async Task<bool> DeleteAsync(string domain, CancellationToken ct)
+        public async Task<bool> DeleteAsync(string domain, CancellationToken ct = default)
         {
             var command = $"sudo certbot delete --cert-name {domain} --non-interactive";
-            return await RunCertbotAsync(command, ct);
+            return await RunCertbotAsync(command, domain, ct);
         }
 
-        private async Task<bool> RunCertbotAsync(string command, CancellationToken ct)
+        private async Task<bool> RunCertbotAsync(string command, string domain, CancellationToken ct = default)
         {
             var process = new Process
             {
@@ -59,9 +60,46 @@ namespace NeskAgent.Proxy.Services.Nginx
                 }
             };
 
-            process.Start();
-            await process.WaitForExitAsync(ct);
-            return process.ExitCode == 0;
+            try
+            {
+                process.Start();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[SSL] [{domain}] Falha ao iniciar certbot: {ex.Message}");
+                return false;
+            }
+
+            var stdoutTask = process.StandardOutput.ReadToEndAsync(ct);
+            var stderrTask = process.StandardError.ReadToEndAsync(ct);
+
+            try
+            {
+                await process.WaitForExitAsync(ct);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[SSL] [{domain}] Erro aguardando certbot: {ex.Message}");
+                try { process.Kill(true); } catch { }
+                return false;
+            }
+
+            var stdout = await stdoutTask;
+            var stderr = await stderrTask;
+
+            if (!string.IsNullOrWhiteSpace(stdout))
+                Console.WriteLine($"[SSL] [{domain}] STDOUT: {stdout.Trim()}");
+            if (!string.IsNullOrWhiteSpace(stderr))
+                Console.WriteLine($"[SSL] [{domain}] STDERR: {stderr.Trim()}");
+
+            if (process.ExitCode == 0)
+            {
+                Console.WriteLine($"[SSL] [{domain}] Certbot executado com sucesso (exit=0)");
+                return true;
+            }
+
+            Console.WriteLine($"[SSL] [{domain}] Certbot falhou (exit={process.ExitCode})");
+            return false;
         }
     }
 }
