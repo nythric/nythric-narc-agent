@@ -1,35 +1,87 @@
-# Build outputs
+# ========================================
+# NarcAgent - .gitignore
+# ========================================
+
+# Compilacao e Build outputs (raiz e subprojetos)
 bin/
 obj/
+**/bin/
+**/obj/
 publish/
+**/publish/
 out/
+**/out/
 build/
+**/build/
 
-# Test results
+# Configuracoes locais de Ambiente e Segredos
+.env
+.env.*
+!.env.example
+*.env
+*.env.local
+
+# Chaves Criptograficas, Certificados e Artefatos ACME/SSL gerados
+*.key
+*.crt
+*.pem
+*.pfx
+*.p12
+*.cer
+*.csr
+account.key
+certs/
+**/certs/
+certificates/
+**/certificates/
+ssl/
+**/ssl/
+.well-known/
+
+# Dados locais do agente e tokens de autenticacao
+Data/
+**/Data/
+.agent.nortlin
+agent.nortlin
+token.json
+.token*
+
+# Logs
+*.log
+logs/
+**/logs/
+
+# Testes e Cobertura
 TestResults/
-*.user
-*.suo
+[Tt]est[Rr]esults/
+*.coverage
+*.coveragexml
+
+# IDEs, Editores e Arquivos de Usuario
 .vs/
 .vscode/
 .idea/
+*.user
+*.suo
+*.userosv
+*.userprefs
 
-# NuGet
+# NuGet e Pacotes
 *.nupkg
 *.snupkg
 .nuget/
 packages/
+**/packages/
+project.lock.json
+project.assets.json
 
-# Logs
-*.log
-
-# Local data / secrets
-Data/
-.agent.nortlin
-agent.nortlin
-
-# OS / editor
+# Sistema Operacional
 .DS_Store
 Thumbs.db
+ehthumbs.db
+desktop.ini
 
-# Runtime
+# Runtime e Backups
 *.runtimeconfig.json.bak
+*.orig
+*.bak

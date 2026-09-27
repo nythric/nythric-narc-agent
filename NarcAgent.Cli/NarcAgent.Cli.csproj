@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>NarcAgent.Cli</AssemblyName>
+    <RootNamespace>NarcAgent.Cli</RootNamespace>
+    <RollForward>LatestMajor</RollForward>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="DotNetEnv" Version="3.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\NarcAgent.Core\NarcAgent.Core.csproj" />
+    <ProjectReference Include="..\NarcAgent.Proxy\NarcAgent.Proxy.csproj" />
+  </ItemGroup>
+
+</Project>

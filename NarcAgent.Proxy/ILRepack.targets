@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!-- Run AfterBuild for standard dotnet build when Certes.dll exists in TargetDir -->
+  <Target Name="AfterBuild" AfterTargets="Build" Condition="Exists('$(TargetDir)Certes.dll')">
+    <Message Importance="high" Text="--- ILRepack: Merging Certes and BouncyCastle into $(TargetPath) ---" />
+    <ItemGroup>
+      <InputAssemblies Include="$(IntermediateOutputPath)$(TargetName)$(TargetExt)" />
+      <InputAssemblies Include="$(TargetDir)Certes.dll" />
+      <InputAssemblies Include="$(TargetDir)BouncyCastle.Cryptography.dll" />
+    </ItemGroup>
+    <ILRepack
+      Parallel="true"
+      DebugInfo="true"
+      AllowDuplicateResources="false"
+      InputAssemblies="@(InputAssemblies)"
+      TargetKind="Dll"
+      OutputFile="$(TargetPath)"
+      LibraryPath="$(TargetDir)"
+    />
+    <!-- Clean loose dependency dlls and pdbs from target dir -->
+    <Delete Files="$(TargetDir)Certes.dll;$(TargetDir)BouncyCastle.Cryptography.dll;$(TargetDir)Certes.pdb;$(TargetDir)BouncyCastle.Cryptography.pdb" />
+  </Target>
+
+  <!-- Prevent loose Certes and BouncyCastle from being copied during publish -->
+  <Target Name="ExcludeMergedFilesFromPublish" AfterTargets="ComputeResolvedFilesToPublishList">
+    <ItemGroup>
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)" Condition="'%(Filename)' == 'Certes' or '%(Filename)' == 'BouncyCastle.Cryptography'" />
+    </ItemGroup>
+  </Target>
+
+  <!-- Ensure published output gets the merged DLL -->
+  <Target Name="CopyMergedDllToPublishDir" AfterTargets="Publish" Condition="'$(PublishDir)' != '' and Exists('$(TargetPath)')">
+    <Message Importance="high" Text="--- ILRepack: Copying merged $(TargetPath) to $(PublishDir) ---" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFiles="$(PublishDir)$(TargetName)$(TargetExt)" />
+  </Target>
+</Project>

@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>NarcAgent.Proxy</AssemblyName>
+    <RootNamespace>NarcAgent.Proxy</RootNamespace>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\NarcAgent.Core\NarcAgent.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Certes" Version="4.0.0" />
+    <PackageReference Include="ILRepack.Lib.MSBuild.Task" Version="2.0.48">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <!-- ILRepack AfterBuild configuration is defined in ILRepack.targets (automatically imported by ILRepack.Lib.MSBuild.Task) -->
+
+</Project>
