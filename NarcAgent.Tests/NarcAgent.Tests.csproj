@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
@@ -20,6 +20,9 @@
 
   <ItemGroup>
     <ProjectReference Include="..\NarcAgent.Proxy\NarcAgent.Proxy.csproj" />
+    <ProjectReference Include="..\NarcAgent.Plugins\NarcAgent.Plugins.csproj" />
+    <ProjectReference Include="..\NarcAgent.Core\NarcAgent.Core.csproj" />
+    <ProjectReference Include="..\NarcAgent.Command\NarcAgent.Command.csproj" />
   </ItemGroup>
 
 </Project>

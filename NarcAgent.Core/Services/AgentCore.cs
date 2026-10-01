@@ -163,7 +163,8 @@ namespace NarcAgent.Core.Services
         {
             try
             {
-                var command = JsonDocument.Parse("{\"action\":\"request_telemetry\"}");
+                var payload = JsonSerializer.Serialize(new { action = "request_telemetry", agent_id = _agentId });
+                var command = JsonDocument.Parse(payload);
                 var result = await _router.RouteAsync(command, ct);
 
                 if (result != null && !string.IsNullOrEmpty(result.Payload))
@@ -432,7 +433,7 @@ namespace NarcAgent.Core.Services
                         }
                         if (!string.IsNullOrEmpty(requestId) && !dict.ContainsKey("request_id"))
                             dict["request_id"] = requestId;
-                        if (!string.IsNullOrEmpty(agentId) && !dict.ContainsKey("agent_id"))
+                        if (!string.IsNullOrEmpty(agentId) && (!dict.ContainsKey("agent_id") || dict["agent_id"] == null || string.IsNullOrEmpty(dict["agent_id"]?.ToString())))
                             dict["agent_id"] = agentId;
                         return dict;
                     }
