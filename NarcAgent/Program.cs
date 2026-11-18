@@ -26,9 +26,15 @@ namespace NarcAgent
 
 		static async Task<(bool approved, string? token, DateTime? expiresAt, string? refreshToken)> RegisterAgentAsync(string apiUrl, string agentId, string agentName)
 		{
+			var timeoutSeconds = 30;
+			if (int.TryParse(Environment.GetEnvironmentVariable("API_TIMEOUT_SECONDS"), out var parsedTimeout) && parsedTimeout > 0)
+			{
+				timeoutSeconds = parsedTimeout;
+			}
+
 			try
 			{
-				var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+				using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(timeoutSeconds) };
 				
 				var fullUrl = apiUrl.TrimEnd('/') + "/api/agentes/conectar";
 				var payload = new { id = agentId, name = agentName };
@@ -50,11 +56,18 @@ namespace NarcAgent
 				if (result.Status == "approved")
 				{
 					DateTime? expiresAt = null;
-					if (!string.IsNullOrEmpty(result.ExpiresAt) && DateTime.TryParse(result.ExpiresAt, out var parsedDate))
+					if (!string.IsNullOrEmpty(result.ExpiresAt))
 					{
-						expiresAt = parsedDate;
+						if (DateTimeOffset.TryParse(result.ExpiresAt, out var parsedDto))
+						{
+							expiresAt = parsedDto.UtcDateTime;
+						}
+						else if (DateTime.TryParse(result.ExpiresAt, out var parsedDate))
+						{
+							expiresAt = parsedDate.Kind == DateTimeKind.Utc ? parsedDate : DateTime.SpecifyKind(parsedDate, DateTimeKind.Utc);
+						}
 					}
-					Console.WriteLine($"[NarcAgent] Agent status: {result.Status}. Token expires at: {result.ExpiresAt}");
+					Console.WriteLine($"[NarcAgent] Agent status: {result.Status}. Token expires at: {result.ExpiresAt} (UTC: {expiresAt:yyyy-MM-dd HH:mm:ss})");
 					
 					return (true, result.Token, expiresAt, result.RefreshToken);
 				}
@@ -62,9 +75,19 @@ namespace NarcAgent
 				Console.WriteLine($"[NarcAgent] Agent status: {result.Status}. Waiting for admin approval...");
 				return (false, null, null, null);
 			}
+			catch (OperationCanceledException ex)
+			{
+				Console.WriteLine($"[NarcAgent] Registration timed out ({timeoutSeconds}s): {ex.Message}");
+				return (false, null, null, null);
+			}
 			catch (HttpRequestException ex)
 			{
-				Console.WriteLine($"[NarcAgent] Registration failed: {ex.Message}");
+				Console.WriteLine($"[NarcAgent] Registration network error: {ex.Message}");
+				return (false, null, null, null);
+			}
+			catch (Exception ex)
+			{
+				Console.WriteLine($"[NarcAgent] Registration failed ({ex.GetType().Name}): {ex.Message}");
 				return (false, null, null, null);
 			}
 		}
@@ -145,7 +168,16 @@ namespace NarcAgent
                     var maxRegBackoff = TimeSpan.FromSeconds(30);
                     while (!isRegistered)
                     {
-                        (isRegistered, authToken, tokenExpiresAt, refreshToken) = await RegisterAgentAsync(httpBase, agentId, agentName);
+                        try
+                        {
+                            (isRegistered, authToken, tokenExpiresAt, refreshToken) = await RegisterAgentAsync(httpBase, agentId, agentName);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"[NarcAgent] Unexpected error during registration attempt: {ex.Message}");
+                            isRegistered = false;
+                        }
+
                         if (!isRegistered)
                         {
                             Console.WriteLine($"[NarcAgent] Retrying in {regBackoff.TotalSeconds:F0} seconds...");
@@ -182,8 +214,20 @@ namespace NarcAgent
                 var pluginsDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "plugins");
                 if (Directory.Exists(pluginsDir))
                 {
+                    var loadedAssemblies = AppDomain.CurrentDomain.GetAssemblies()
+                        .Select(a => a.GetName().Name)
+                        .Where(n => !string.IsNullOrEmpty(n))
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
                     foreach (var dll in Directory.GetFiles(pluginsDir, "*.dll"))
                     {
+                        var assemblyName = Path.GetFileNameWithoutExtension(dll);
+                        if (loadedAssemblies.Contains(assemblyName))
+                        {
+                            // Já está compilado e carregado nativamente (ex: NarcAgent.Proxy)
+                            continue;
+                        }
+
                         try
                         {
                             var asm = Assembly.LoadFrom(dll);
@@ -213,7 +257,7 @@ namespace NarcAgent
                 // 4. Start the agent with the authentication token
                 try
                 {
-                    using var core = new AgentCore(router, wsUrl, agentId, agentName, authToken, tokenExpiresAt, tokenStorage, refreshToken);
+                    using var core = new AgentCore(router, wsUrl, agentId, agentName, authToken, tokenExpiresAt, tokenStorage, refreshToken, httpBase);
                     await core.RunAsync(CancellationToken.None);
                     break; // If RunAsync returns normally, exit loop
                 }

@@ -47,7 +47,16 @@ namespace NarcAgent.Core.Services
             try
             {
                 var json = await File.ReadAllTextAsync(_filePath);
-                return JsonSerializer.Deserialize<StoredToken>(json);
+                var stored = JsonSerializer.Deserialize<StoredToken>(json);
+                if (stored != null && stored.ExpiresAt.HasValue)
+                {
+                    var dt = stored.ExpiresAt.Value;
+                    var utc = dt.Kind == DateTimeKind.Utc ? dt :
+                              dt.Kind == DateTimeKind.Local ? dt.ToUniversalTime() :
+                              DateTime.SpecifyKind(dt, DateTimeKind.Utc);
+                    return stored with { ExpiresAt = utc };
+                }
+                return stored;
             }
             catch
             {

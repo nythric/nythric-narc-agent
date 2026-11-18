@@ -323,6 +323,38 @@ server {
             Assert.Contains("save_config", plugin.SupportedActions);
             Assert.Contains("delete_proxy", plugin.SupportedActions);
             Assert.Contains("toggle_config", plugin.SupportedActions);
+            Assert.Contains("renew_ssl", plugin.SupportedActions);
+            Assert.Contains("check_ssl", plugin.SupportedActions);
+        }
+
+        [Fact]
+        public void EnsureBootstrapCertificate_GeneratesValidPemAndCertFiles()
+        {
+            var tempDir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "SslBootstrap_" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                var domain = "cf-test.com";
+                NginxSslService.EnsureBootstrapCertificate(domain, tempDir);
+
+                var (certPath, keyPath) = NginxSslService.GetCertificatePaths(domain, tempDir);
+                Assert.True(System.IO.File.Exists(certPath));
+                Assert.True(System.IO.File.Exists(keyPath));
+
+                var exp = NginxSslService.GetCertificateExpiration(domain, tempDir);
+                Assert.NotNull(exp);
+                Assert.True(exp.Value > DateTime.UtcNow);
+
+                var sslService = new NginxSslService(sslBasePath: tempDir);
+                // Um certificado recém-criado com validade de 30 dias não deve precisar de renovação se o limiar for menor (ex: 20 dias)
+                Assert.False(sslService.NeedsRenewal(domain, 10));
+            }
+            finally
+            {
+                if (System.IO.Directory.Exists(tempDir))
+                {
+                    System.IO.Directory.Delete(tempDir, true);
+                }
+            }
         }
     }
 }

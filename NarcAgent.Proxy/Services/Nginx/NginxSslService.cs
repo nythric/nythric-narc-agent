@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -20,7 +22,6 @@ namespace NarcAgent.Proxy.Services.Nginx
 
         public const string DefaultWebRoot = "/var/www/html";
         public const string DefaultSslPath = "/etc/narc/ssl";
-        public const string LegacySslPath = "/etc/letsencrypt/live";
 
         public NginxSslService(string webRootPath = DefaultWebRoot, string sslBasePath = DefaultSslPath)
         {
@@ -42,42 +43,30 @@ namespace NarcAgent.Proxy.Services.Nginx
 
             // Check /etc/narc/ssl/{domain}/
             var narcDir = Path.Combine(sslBasePath, domain);
-            if (File.Exists(Path.Combine(narcDir, $"{domain}.crt")) ||
-                File.Exists(Path.Combine(narcDir, "fullchain.crt")) ||
-                File.Exists(Path.Combine(narcDir, "certificate.crt")))
-            {
-                return true;
-            }
-
-            // Check /etc/letsencrypt/live/{domain}/
-            if (File.Exists($"/etc/letsencrypt/live/{domain}/fullchain.pem"))
-            {
-                return true;
-            }
-
-            return false;
+            return File.Exists(Path.Combine(narcDir, $"{domain}.crt")) ||
+                   File.Exists(Path.Combine(narcDir, "fullchain.crt")) ||
+                   File.Exists(Path.Combine(narcDir, "certificate.crt"));
         }
 
         /// <summary>
-        /// Retrieves the certificate and private key paths for the domain,
-        /// prioritizing /etc/narc/ssl/{domain} then falling back to /etc/letsencrypt/live/{domain}.
+        /// Retrieves the certificate and private key paths for the domain strictly within /etc/narc/ssl/{domain}.
         /// </summary>
         public static (string certPath, string keyPath) GetCertificatePaths(string domain, string sslBasePath = DefaultSslPath)
         {
             var narcDir = Path.Combine(sslBasePath, domain);
-
-            var domainCrt = Path.Combine(narcDir, $"{domain}.crt");
-            var domainKey = Path.Combine(narcDir, $"{domain}.key");
-            if (File.Exists(domainCrt) && File.Exists(domainKey))
-            {
-                return (domainCrt, domainKey);
-            }
 
             var fullchainCrt = Path.Combine(narcDir, "fullchain.crt");
             var privkeyKey = Path.Combine(narcDir, "privkey.key");
             if (File.Exists(fullchainCrt) && File.Exists(privkeyKey))
             {
                 return (fullchainCrt, privkeyKey);
+            }
+
+            var domainCrt = Path.Combine(narcDir, $"{domain}.crt");
+            var domainKey = Path.Combine(narcDir, $"{domain}.key");
+            if (File.Exists(domainCrt) && File.Exists(domainKey))
+            {
+                return (domainCrt, domainKey);
             }
 
             var certCrt = Path.Combine(narcDir, "certificate.crt");
@@ -87,15 +76,115 @@ namespace NarcAgent.Proxy.Services.Nginx
                 return (certCrt, privKey);
             }
 
-            var leCert = $"/etc/letsencrypt/live/{domain}/fullchain.pem";
-            var leKey = $"/etc/letsencrypt/live/{domain}/privkey.pem";
-            if (File.Exists(leCert) && File.Exists(leKey))
+            // Default fallback
+            return (fullchainCrt, privkeyKey);
+        }
+
+        /// <summary>
+        /// Lê a data de expiração (NotAfter) do certificado no disco via X509Certificate2.
+        /// </summary>
+        public static DateTime? GetCertificateExpiration(string domain, string sslBasePath = DefaultSslPath)
+        {
+            try
             {
-                return (leCert, leKey);
+                var (certPath, _) = GetCertificatePaths(domain, sslBasePath);
+                if (!File.Exists(certPath)) return null;
+
+                var pemContent = File.ReadAllText(certPath);
+                using var cert = X509Certificate2.CreateFromPem(pemContent);
+                return cert.NotAfter.ToUniversalTime();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[SSL] [{domain}] Erro ao ler expiração do certificado: {ex.Message}");
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Verifica se o certificado precisa ser renovado (expira em <= daysBefore dias ou já expirou).
+        /// </summary>
+        public bool NeedsRenewal(string domain, int daysBefore = 30)
+        {
+            var exp = GetCertificateExpiration(domain, _sslBasePath);
+            if (!exp.HasValue) return true; // Ausente ou ilegível: precisa renovar
+            return DateTime.UtcNow.AddDays(daysBefore) >= exp.Value;
+        }
+
+        /// <summary>
+        /// Retorna todos os domínios gerenciados que possuem certificados no diretório base.
+        /// </summary>
+        public List<string> GetAllManagedDomains()
+        {
+            var list = new List<string>();
+            if (IoDirectory.Exists(_sslBasePath))
+            {
+                foreach (var dir in IoDirectory.GetDirectories(_sslBasePath))
+                {
+                    var domain = Path.GetFileName(dir);
+                    if (!string.IsNullOrEmpty(domain) && CheckCertificateExists(domain, _sslBasePath))
+                    {
+                        list.Add(domain);
+                    }
+                }
+            }
+            return list;
+        }
+
+        /// <summary>
+        /// Gera previamente um certificado autoassinado temporário na porta 443 caso o certificado
+        /// oficial ainda não exista. Isso evita que a Cloudflare receba "525 SSL Handshake Failed"
+        /// no modo "Completa" (Full) enquanto o Let's Encrypt cumpre o desafio ACME na porta 80.
+        /// </summary>
+        public static void EnsureBootstrapCertificate(string domain, string sslBasePath = DefaultSslPath)
+        {
+            if (string.IsNullOrWhiteSpace(domain)) return;
+
+            var narcDir = Path.Combine(sslBasePath, domain);
+            if (!IoDirectory.Exists(narcDir))
+            {
+                IoDirectory.CreateDirectory(narcDir);
+                TryChmod(narcDir, "755");
             }
 
-            // Default fallback
-            return (domainCrt, domainKey);
+            var fullchainCrt = Path.Combine(narcDir, "fullchain.crt");
+            var privkeyKey = Path.Combine(narcDir, "privkey.key");
+            var domainCrt = Path.Combine(narcDir, $"{domain}.crt");
+            var domainKey = Path.Combine(narcDir, $"{domain}.key");
+
+            if (File.Exists(fullchainCrt) && File.Exists(privkeyKey)) return;
+            if (File.Exists(domainCrt) && File.Exists(domainKey)) return;
+
+            try
+            {
+                using var rsa = RSA.Create(2048);
+                var request = new CertificateRequest($"CN={domain}", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+                var sanBuilder = new SubjectAlternativeNameBuilder();
+                sanBuilder.AddDnsName(domain);
+                request.CertificateExtensions.Add(sanBuilder.Build());
+                var notBefore = DateTimeOffset.UtcNow.AddDays(-1);
+                var notAfter = DateTimeOffset.UtcNow.AddDays(30);
+                using var cert = request.CreateSelfSigned(notBefore, notAfter);
+
+                var certPem = cert.ExportCertificatePem();
+                var keyPem = rsa.ExportPkcs8PrivateKeyPem();
+
+                File.WriteAllText(fullchainCrt, certPem);
+                File.WriteAllText(privkeyKey, keyPem);
+                File.WriteAllText(domainCrt, certPem);
+                File.WriteAllText(domainKey, keyPem);
+
+                TryChmod(fullchainCrt, "644");
+                TryChmod(privkeyKey, "600");
+                TryChmod(domainCrt, "644");
+                TryChmod(domainKey, "600");
+
+                Console.WriteLine($"[SSL] [{domain}] Certificado bootstrap autoassinado provisório gerado para port 443 (Cloudflare Full Mode compatível).");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[SSL] [{domain}] Aviso: não foi possível gerar bootstrap self-signed cert: {ex.Message}");
+            }
         }
 
         /// <summary>
@@ -231,24 +320,6 @@ namespace NarcAgent.Proxy.Services.Nginx
                 TryChmod(certFile, "644");
                 TryChmod(privateKeyFile, "600");
 
-                // Espelha em /etc/letsencrypt/live/{domain} para compatibilidade retroativa
-                try
-                {
-                    var leDir = $"/etc/letsencrypt/live/{domain}";
-                    if (!IoDirectory.Exists(leDir))
-                    {
-                        IoDirectory.CreateDirectory(leDir);
-                    }
-                    await File.WriteAllTextAsync(Path.Combine(leDir, "fullchain.pem"), fullChainPem, ct);
-                    await File.WriteAllTextAsync(Path.Combine(leDir, "privkey.pem"), privateKeyPem, ct);
-                    TryChmod(Path.Combine(leDir, "fullchain.pem"), "644");
-                    TryChmod(Path.Combine(leDir, "privkey.pem"), "600");
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"[SSL] [{domain}] Aviso: Falha ao espelhar em /etc/letsencrypt: {ex.Message}");
-                }
-
                 Console.WriteLine($"[SSL] [{domain}] Certificado gerado e instalado com sucesso em {targetDir}!");
                 return true;
             }
@@ -290,25 +361,6 @@ namespace NarcAgent.Proxy.Services.Nginx
                 {
                     IoDirectory.Delete(targetDir, true);
                     Console.WriteLine($"[SSL] [{domain}] Diretorio de certificados {targetDir} removido.");
-                }
-
-                var leDir = $"/etc/letsencrypt/live/{domain}";
-                if (IoDirectory.Exists(leDir))
-                {
-                    IoDirectory.Delete(leDir, true);
-                    Console.WriteLine($"[SSL] [{domain}] Diretorio {leDir} removido.");
-                }
-
-                var leArchive = $"/etc/letsencrypt/archive/{domain}";
-                if (IoDirectory.Exists(leArchive))
-                {
-                    IoDirectory.Delete(leArchive, true);
-                }
-
-                var leRenewal = $"/etc/letsencrypt/renewal/{domain}.conf";
-                if (File.Exists(leRenewal))
-                {
-                    File.Delete(leRenewal);
                 }
 
                 return Task.FromResult(true);

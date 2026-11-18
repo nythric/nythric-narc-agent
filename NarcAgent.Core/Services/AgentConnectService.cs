@@ -20,9 +20,13 @@ namespace NarcAgent.Core.Services
         {
             // Converte wss:// ou ws:// para https:// ou http://
             _httpBaseUrl = wsBaseUrl.Replace("wss://", "https://", StringComparison.OrdinalIgnoreCase)
-                                     .Replace("ws://", "http://", StringComparison.OrdinalIgnoreCase);
+                                     .Replace("ws://", "http://", StringComparison.OrdinalIgnoreCase)
+                                     .TrimEnd('/');
+            if (!_httpBaseUrl.StartsWith("http://", StringComparison.OrdinalIgnoreCase) && !_httpBaseUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            {
+                _httpBaseUrl = "https://" + _httpBaseUrl;
+            }
 
-            _httpClient.BaseAddress = new Uri(_httpBaseUrl);
             _httpClient.Timeout = TimeSpan.FromSeconds(15);
         }
 
@@ -31,7 +35,8 @@ namespace NarcAgent.Core.Services
             try
             {
                 var payload = new { id, name };
-                var response = await _httpClient.PostAsJsonAsync("/api/agentes/conectar", payload);
+                var fullUrl = _httpBaseUrl + "/api/agentes/conectar";
+                var response = await _httpClient.PostAsJsonAsync(fullUrl, payload);
                 
                 if (response.IsSuccessStatusCode)
                 {

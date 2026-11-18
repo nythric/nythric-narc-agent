@@ -20,21 +20,40 @@ namespace NarcAgent.Proxy.Services.Nginx
 
             bool certExists = !string.IsNullOrEmpty(domain) && HasCertificate(domain);
 
+            // Se SSL estiver solicitado mas o certificado oficial ainda não existir,
+            // provisiona previamente o bootstrap autoassinado para que a porta 443 responda
+            // imediatamente ao handshake TLS da Cloudflare (Full mode) sem Erro 525.
+            if (!certExists && sslAvailable && !string.IsNullOrWhiteSpace(domain))
+            {
+                NginxSslService.EnsureBootstrapCertificate(domain);
+                certExists = HasCertificate(domain);
+            }
+
             // Se o rawConfig estiver vazio ou em branco, gera o template base com placeholders
             string template = rawConfig ?? string.Empty;
             if (string.IsNullOrWhiteSpace(template))
             {
                 template = GetDefaultTemplate(sslAvailable && certExists);
             }
+            else if (sslAvailable && certExists)
+            {
+                // Se o rawConfig customizado foi fornecido mas NÃO possui bloco de porta 443 ativo,
+                // injeta automaticamente o bloco 443 preservando as rotas customizadas!
+                if (!NginxConfigModifier.HasActivePort443(template))
+                {
+                    var (certPath, keyPath) = NginxSslService.GetCertificatePaths(domain);
+                    template = NginxConfigModifier.InjectSslIntoConfig(template, domain, certPath, keyPath);
+                }
+            }
 
-            // Se o template contém diretivas SSL mas o certificado ainda não existe no disco,
-            // gera temporariamente a configuração bootstrap HTTP para que o desafio ACME possa ser cumprido.
-            if (!certExists && (template.Contains("ssl_certificate", StringComparison.OrdinalIgnoreCase) || template.Contains("listen 443", StringComparison.OrdinalIgnoreCase)))
+            // Fallback de segurança: se o template contém diretivas SSL mas não há certificado
+            if (!certExists && (template.Contains("ssl_certificate", StringComparison.OrdinalIgnoreCase) || NginxConfigModifier.HasActivePort443(template)))
             {
                 return GenerateHttpBootstrapConfig(domain, targetHost, targetPort);
             }
 
-            return ApplyPlaceholders(template, domain, targetHost, targetPort);
+            var result = ApplyPlaceholders(template, domain, targetHost, targetPort);
+            return NginxConfigModifier.SanitizeConfig(result);
         }
 
         /// <summary>
@@ -74,6 +93,15 @@ namespace NarcAgent.Proxy.Services.Nginx
             return CompileTemplate(rawConfig, domain, targetHost, targetPort, enabled, sslAvailable);
         }
 
+        /// <summary>
+        /// Gera a configuração NGINX para proxy desativado, servindo a página
+        /// de manutenção (/var/www/html/narc_deactivated.html) com preservação de SSL se disponível.
+        /// </summary>
+        public string GenerateDeactivatedConfig(string domain, bool sslAvailable)
+        {
+            return GenerateDisabledConfig(domain, sslAvailable);
+        }
+
         public static string GetDefaultTemplate(bool ssl = false)
         {
             if (ssl)
@@ -100,8 +128,8 @@ server {
     listen 443 ssl http2;
     server_name {{domain}};
 
-    ssl_certificate /etc/letsencrypt/live/{{domain}}/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/{{domain}}/privkey.pem;
+    ssl_certificate {{ssl_certificate}};
+    ssl_certificate_key {{ssl_certificate_key}};
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers HIGH:!aNULL:!MD5;
 

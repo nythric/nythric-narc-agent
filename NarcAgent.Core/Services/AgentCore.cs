@@ -35,22 +35,50 @@ namespace NarcAgent.Core.Services
         private const int MaxPendingResults = 50;
         private static readonly TimeSpan ResultTtl = TimeSpan.FromMinutes(5);
 
-        public AgentCore(CommandRouter router, string serverUri, string agentId, string agentName, string? authToken = null, DateTime? tokenExpiresAt = null, TokenStorage? tokenStorage = null, string? refreshToken = null)
+        public AgentCore(
+            CommandRouter router,
+            string serverUri,
+            string agentId,
+            string agentName,
+            string? authToken = null,
+            DateTime? tokenExpiresAt = null,
+            TokenStorage? tokenStorage = null,
+            string? refreshToken = null,
+            string? httpBaseUrl = null)
         {
             _router = router;
             _serverUri = NormalizeWebSocketUri(serverUri);
             _agentId = agentId;
             _agentName = agentName;
             _authToken = authToken;
-            _tokenExpiresAt = tokenExpiresAt;
+            _tokenExpiresAt = tokenExpiresAt.HasValue ? EnsureUtc(tokenExpiresAt.Value) : null;
             _refreshToken = refreshToken;
             _tokenStorage = tokenStorage;
             
-            var scheme = _serverUri.Scheme == "wss" ? "https" : "http";
-            _httpBaseUrl = $"{scheme}://{_serverUri.Host}{(_serverUri.IsDefaultPort ? "" : ":" + _serverUri.Port)}";
+            if (!string.IsNullOrWhiteSpace(httpBaseUrl))
+            {
+                var cleaned = httpBaseUrl.TrimEnd('/');
+                if (cleaned.StartsWith("ws://", StringComparison.OrdinalIgnoreCase))
+                    cleaned = "http://" + cleaned["ws://".Length..];
+                else if (cleaned.StartsWith("wss://", StringComparison.OrdinalIgnoreCase))
+                    cleaned = "https://" + cleaned["wss://".Length..];
+                else if (!cleaned.StartsWith("http://", StringComparison.OrdinalIgnoreCase) && !cleaned.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                    cleaned = "https://" + cleaned;
+
+                _httpBaseUrl = cleaned;
+            }
+            else
+            {
+                var scheme = _serverUri.Scheme == "wss" ? "https" : "http";
+                var portStr = _serverUri.IsDefaultPort ? "" : ":" + _serverUri.Port;
+                var path = _serverUri.AbsolutePath;
+                var wsIdx = path.IndexOf("/ws/agent", StringComparison.OrdinalIgnoreCase);
+                var prefix = wsIdx > 0 ? path.Substring(0, wsIdx).TrimEnd('/') : "";
+                _httpBaseUrl = $"{scheme}://{_serverUri.Host}{portStr}{prefix}";
+            }
             
             _httpClient = new HttpClient();
-            AgentAuthContext.Update(_authToken, _agentId);
+            AgentAuthContext.Update(_authToken, _agentId, _httpBaseUrl);
         }
 
         public async Task RunAsync(CancellationToken externalCt)
@@ -110,13 +138,40 @@ namespace NarcAgent.Core.Services
             {
                 try
                 {
-                    await Task.Delay(TimeSpan.FromMinutes(25), ct);
+                    TimeSpan delay = TimeSpan.FromMinutes(10);
+                    if (_tokenExpiresAt.HasValue)
+                    {
+                        var expUtc = EnsureUtc(_tokenExpiresAt.Value);
+                        var remaining = expUtc - DateTime.UtcNow;
+                        // Renovação pró-ativa: renova 8 minutos antes de expirar (para token de 20 min, renova aos 12 min)
+                        var targetDelay = remaining - TimeSpan.FromMinutes(8);
+                        if (targetDelay > TimeSpan.FromSeconds(30))
+                        {
+                            delay = targetDelay;
+                        }
+                        else if (remaining > TimeSpan.FromMinutes(2))
+                        {
+                            delay = TimeSpan.FromMinutes(1);
+                        }
+                        else if (remaining > TimeSpan.Zero)
+                        {
+                            delay = TimeSpan.FromSeconds(30);
+                        }
+                        else
+                        {
+                            delay = TimeSpan.FromSeconds(10);
+                        }
+                    }
+
+                    Console.WriteLine($"[AgentCore] Next token refresh scheduled in {delay.TotalMinutes:F1} minutes ({delay.TotalSeconds:F0}s).");
+                    await Task.Delay(delay, ct);
                     await RenewTokenAsync(ct);
                 }
                 catch (TaskCanceledException) { break; }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"[AgentCore] Token refresh error: {ex.Message}");
+                    Console.WriteLine($"[AgentCore] Token refresh loop error: {ex.Message}");
+                    try { await Task.Delay(TimeSpan.FromSeconds(30), ct); } catch { break; }
                 }
             }
         }
@@ -185,13 +240,16 @@ namespace NarcAgent.Core.Services
 
             try
             {
-                Console.WriteLine("[AgentCore] Renewing token...");
                 var fullUrl = _httpBaseUrl.TrimEnd('/') + "/api/agentes/renovar-token";
+                Console.WriteLine($"[AgentCore] Renewing token at {fullUrl}...");
                 var request = new HttpRequestMessage(HttpMethod.Post, fullUrl);
-                if (!string.IsNullOrEmpty(_authToken))
+                
+                // Só anexa o Bearer token no cabeçalho se ele ainda não estiver vencido
+                if (!string.IsNullOrEmpty(_authToken) && !IsTokenExpiredOrNearExpiry())
                 {
                     request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _authToken);
                 }
+                
                 if (!string.IsNullOrEmpty(_refreshToken))
                 {
                     var body = new { refresh_token = _refreshToken };
@@ -218,7 +276,7 @@ namespace NarcAgent.Core.Services
 
                 if (!response.IsSuccessStatusCode)
                 {
-                    Console.WriteLine($"[AgentCore] Failed to renew token. HTTP {response.StatusCode}: {content.Substring(0, Math.Min(content.Length, 100))}");
+                    Console.WriteLine($"[AgentCore] Failed to renew token at {fullUrl}. HTTP {response.StatusCode}: {content.Substring(0, Math.Min(content.Length, 100))}");
                     return;
                 }
 
@@ -230,9 +288,20 @@ namespace NarcAgent.Core.Services
                     if (root.TryGetProperty("token", out var newToken))
                     {
                         _authToken = newToken.GetString();
-                        if (root.TryGetProperty("expires_at", out var exp) && DateTime.TryParse(exp.GetString(), out var expTime))
+                        if (root.TryGetProperty("expires_at", out var exp))
                         {
-                            _tokenExpiresAt = expTime;
+                            var expStr = exp.GetString();
+                            if (!string.IsNullOrEmpty(expStr))
+                            {
+                                if (DateTimeOffset.TryParse(expStr, out var dto))
+                                {
+                                    _tokenExpiresAt = dto.UtcDateTime;
+                                }
+                                else if (DateTime.TryParse(expStr, out var expTime))
+                                {
+                                    _tokenExpiresAt = EnsureUtc(expTime);
+                                }
+                            }
                         }
 
                         if (root.TryGetProperty("refresh_token", out var newRefresh) && newRefresh.ValueKind == JsonValueKind.String)
@@ -240,8 +309,16 @@ namespace NarcAgent.Core.Services
                             _refreshToken = newRefresh.GetString();
                         }
 
-                        Console.WriteLine("[AgentCore] Token renewed successfully!");
-                        AgentAuthContext.Update(_authToken, _agentId);
+                        if (_tokenExpiresAt.HasValue)
+                        {
+                            var remainingMin = (_tokenExpiresAt.Value - DateTime.UtcNow).TotalMinutes;
+                            Console.WriteLine($"[AgentCore] Token renewed successfully! Valid until {_tokenExpiresAt:yyyy-MM-dd HH:mm:ss} UTC (in {remainingMin:F1} min)");
+                        }
+                        else
+                        {
+                            Console.WriteLine("[AgentCore] Token renewed successfully!");
+                        }
+                        AgentAuthContext.Update(_authToken, _agentId, _httpBaseUrl);
 
                         if (_tokenStorage != null && !string.IsNullOrEmpty(_authToken))
                         {
@@ -592,7 +669,15 @@ namespace NarcAgent.Core.Services
         {
             if (string.IsNullOrEmpty(_authToken)) return true;
             if (!_tokenExpiresAt.HasValue) return true;
-            return DateTime.UtcNow >= _tokenExpiresAt.Value.AddSeconds(-60);
+            var expUtc = EnsureUtc(_tokenExpiresAt.Value);
+            return DateTime.UtcNow >= expUtc.AddMinutes(-5);
+        }
+
+        private static DateTime EnsureUtc(DateTime dt)
+        {
+            if (dt.Kind == DateTimeKind.Utc) return dt;
+            if (dt.Kind == DateTimeKind.Local) return dt.ToUniversalTime();
+            return DateTime.SpecifyKind(dt, DateTimeKind.Utc);
         }
 
         public void Dispose()

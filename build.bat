@@ -81,7 +81,7 @@ echo [1/4] Limpando diretorio anterior...
 if exist "%output%" rmdir /s /q "%output%" 2>nul
 
 echo [2/4] Executando dotnet publish do agente base...
-dotnet publish "NarcAgent\NarcAgent.csproj" -c Release -r %rid% --self-contained false -p:PublishSingleFile=true -o "%output%"
+dotnet publish "NarcAgent\NarcAgent.csproj" -c Release -r %rid% --self-contained true -p:PublishSingleFile=true -o "%output%"
 
 if %errorlevel% neq 0 (
     echo.
@@ -91,7 +91,7 @@ if %errorlevel% neq 0 (
 )
 
 echo [3/4] Executando dotnet publish da ferramenta CLI (NarcAgent.Cli)...
-dotnet publish "NarcAgent.Cli\NarcAgent.Cli.csproj" -c Release -r %rid% --self-contained false -p:PublishSingleFile=true -o "%output%"
+dotnet publish "NarcAgent.Cli\NarcAgent.Cli.csproj" -c Release -r %rid% --self-contained true -p:PublishSingleFile=true -o "%output%"
 
 if %errorlevel% neq 0 (
     echo.
